@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,11 +11,33 @@ torch.cuda.manual_seed_all(42)
 torch.backends.cudnn.deterministic = True # type: ignore
 torch.backends.cudnn.benchmark = False # type: ignore
 
+@dataclass
+class GPTConfig:
+    sequence_length: int = 1024
+    vocab_size: int = 50304
+    num_blocks: int = 12
+    num_heads: int = 12
+    embed_dim: int = 768
+    dropout: float = 0.2
+    bias: bool = True
+
+@dataclass
+class TrainConfig:
+    sequence_length: int = 1024
+    vocab_size: int = 50304
+    num_blocks: int = 12
+    num_heads: int = 12
+    embed_dim: int = 768
+    dropout: float = 0.2
+    bias: bool = True
+
+
 # parameters
 split = 0.8
 data_path = 'data/shakespeare/input.txt'
 device='cuda' if torch.cuda.is_available() else 'cpu'
 print(f'Running on {device}')
+save_path='model.pt'
 
 
 
@@ -27,12 +51,14 @@ eval_interval=1000
 embed_dim=32
 head_size=32
 num_heads=8
-assert head_size % num_heads == 0, 'head_size must be divisible by num_heads'
-assert head_size == embed_dim, 'idk why, my implementation detail'
+
 num_blocks=4
+dropout=0.2
 
 
-
+# sanity checks
+assert head_size % num_heads == 0, 'head_size must be divisible by num_heads'
+assert head_size == embed_dim, 'implementation detail - first Block goes from (embed_dim, head_size) but all later would have to go from (head_size, head_size). in current implementation its all (embed_size, head_size)'
 
 
 # Data input and preprocessing
@@ -77,6 +103,8 @@ class Head(nn.Module):
         self.value = nn.Linear(embed_dim, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones((sequence_length, sequence_length))))
 
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
         B, T, C = x.shape
         k = self.key(x) # (b,t,c) -> (b,t,h)
@@ -86,6 +114,8 @@ class Head(nn.Module):
 
         wei = wei.masked_fill((self.tril[:T, :T] == 0.), -torch.inf) # type: ignore
         wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
+
         xbow = wei @ v # (b,t,t) @ (b,t,h) -> (b,t,h)
         return xbow
 
@@ -94,10 +124,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.head_list = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.head_list], dim=-1)
-        out = self.proj(out)
+        out = self.dropout(self.proj(out))
         return out
 
 class FeedForward(nn.Module):
@@ -109,7 +140,8 @@ class FeedForward(nn.Module):
         self.layers = nn.Sequential(
             nn.Linear(dim, dim),
             nn.ReLU(),
-            nn.Linear(dim, dim)
+            nn.Linear(dim, dim),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x):
@@ -220,3 +252,6 @@ for i in range(num_iters):
     optimzer.step()
 
 print(decode(blm.generate(start_ix, 1000)[0].tolist()))
+
+# save model
+torch.save(blm.state_dict(), save_path)
