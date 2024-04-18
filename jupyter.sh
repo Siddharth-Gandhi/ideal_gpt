@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-gpu=8
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --mem=32GB
 #SBATCH --output=logs/jupyter.log
 #SBATCH --nodelist=boston-2-35

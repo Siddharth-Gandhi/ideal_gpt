@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,27 +8,6 @@ torch.cuda.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 torch.backends.cudnn.deterministic = True # type: ignore
 torch.backends.cudnn.benchmark = False # type: ignore
-
-@dataclass
-class GPTConfig:
-    sequence_length: int = 1024
-    vocab_size: int = 50304
-    num_blocks: int = 12
-    num_heads: int = 12
-    embed_dim: int = 768
-    dropout: float = 0.2
-    bias: bool = True
-
-@dataclass
-class TrainConfig:
-    sequence_length: int = 1024
-    vocab_size: int = 50304
-    num_blocks: int = 12
-    num_heads: int = 12
-    embed_dim: int = 768
-    dropout: float = 0.2
-    bias: bool = True
-
 
 # parameters
 split = 0.8
@@ -49,7 +26,6 @@ num_iters=10000
 eval_iters=100
 eval_interval=1000
 embed_dim=32
-head_size=32
 num_heads=8
 
 num_blocks=4
@@ -57,8 +33,7 @@ dropout=0.2
 
 
 # sanity checks
-assert head_size % num_heads == 0, 'head_size must be divisible by num_heads'
-assert head_size == embed_dim, 'implementation detail - first Block goes from (embed_dim, head_size) but all later would have to go from (head_size, head_size). in current implementation its all (embed_size, head_size)'
+assert embed_dim % num_heads == 0, 'embed_dim must be divisible by num_heads'
 
 
 # Data input and preprocessing
@@ -95,12 +70,12 @@ val_data = data[int(len(data)*split):]
 # modelling
 
 class Head(nn.Module):
-    def __init__(self, head_size):
+    def __init__(self, embed_dim):
         super().__init__()
-        self.head_size = head_size
-        self.key = nn.Linear(embed_dim, head_size, bias=False)
-        self.query = nn.Linear(embed_dim, head_size, bias=False)
-        self.value = nn.Linear(embed_dim, head_size, bias=False)
+        self.embed_dim = embed_dim
+        self.key = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.query = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.value = nn.Linear(embed_dim, embed_dim, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones((sequence_length, sequence_length))))
 
         self.dropout = nn.Dropout(dropout)
@@ -110,7 +85,7 @@ class Head(nn.Module):
         k = self.key(x) # (b,t,c) -> (b,t,h)
         q = self.query(x) # (b,t,c) -> (b,t,h)
         v = self.value(x) # (b,t,c) -> (b,t,h)
-        wei = k @ q.transpose(-2, -1) * self.head_size**(-0.5) # (b,t,h) @ (b,h,t) -> (b,t,t)
+        wei = k @ q.transpose(-2, -1) * self.embed_dim**(-0.5) # (b,t,h) @ (b,h,t) -> (b,t,t)
 
         wei = wei.masked_fill((self.tril[:T, :T] == 0.), -torch.inf) # type: ignore
         wei = F.softmax(wei, dim=-1)
@@ -120,9 +95,9 @@ class Head(nn.Module):
         return xbow
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, head_size):
+    def __init__(self, num_heads, embed_dim):
         super().__init__()
-        self.head_list = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.head_list = nn.ModuleList([Head(embed_dim) for _ in range(num_heads)])
         self.proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
 
@@ -134,8 +109,6 @@ class MultiHeadAttention(nn.Module):
 class FeedForward(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        # self.linear = nn.Linear(dim, dim)
-        # self.relu = nn.ReLU()
 
         self.layers = nn.Sequential(
             nn.Linear(dim, dim),
@@ -145,16 +118,15 @@ class FeedForward(nn.Module):
         )
 
     def forward(self, x):
-        # return self.relu(self.linear(x))
         return self.layers(x)
 
 class Block(nn.Module):
-    def __init__(self, num_heads, head_size):
+    def __init__(self, num_heads, embed_dim):
         super().__init__()
-        self.sa = MultiHeadAttention(num_heads, head_size // num_heads)
-        self.ff = FeedForward(head_size)
-        self.ln1 = nn.LayerNorm(head_size)
-        self.ln2 = nn.LayerNorm(head_size)
+        self.sa = MultiHeadAttention(num_heads, embed_dim // num_heads)
+        self.ff = FeedForward(embed_dim)
+        self.ln1 = nn.LayerNorm(embed_dim)
+        self.ln2 = nn.LayerNorm(embed_dim)
 
     def forward(self, x):
         x = x + self.sa(self.ln1(x))
@@ -162,31 +134,28 @@ class Block(nn.Module):
         return x
 
 
-class BigramLanguageModel(torch.nn.Module):
+class Transformer(torch.nn.Module):
     def __init__(self, embed_dim):
         super().__init__()
         self.token_embeddings = torch.nn.Embedding(vocab_size, embed_dim)
         self.position_embeddings = nn.Embedding(sequence_length, embed_dim)
-        # self.attn_head = Head(head_size)
-        # self.mha = MultiHeadAttention(num_heads, head_size // num_heads)
-        # self.ff = FeedForward(head_size)
-        self.block_list = nn.Sequential(*[Block(num_heads, head_size) for _ in range(num_blocks)])
-        self.final_ln = nn.LayerNorm(head_size)
-        self.lm_head = nn.Linear(head_size, vocab_size)
+        # self.attn_head = Head(embed_dim)
+        # self.mha = MultiHeadAttention(num_heads, embed_dim // num_heads)
+        # self.ff = FeedForward(embed_dim)
+        self.block_list = nn.Sequential(*[Block(num_heads, embed_dim) for _ in range(num_blocks)])
+        self.final_ln = nn.LayerNorm(embed_dim)
+        self.lm_head = nn.Linear(embed_dim, vocab_size)
 
     def forward(self, ixs, targets=None):
         # ixs: (b,t)
         # targets: (b,t)
         B, T = ixs.shape
-        token_embeds = self.token_embeddings(ixs) # (b,t,c=embed_dim)
+        x = self.token_embeddings(ixs) # (b,t,c=embed_dim)
         pos_embeds = self.position_embeddings(torch.arange(T, device=device)) # (t,c=embed_dim)
-        token_embeds += pos_embeds
-        # token_embeds = self.mha(token_embeds) # (b,t,c=head_size)
-        # token_embeds = self.attn_head(token_embeds) # (b,t,h=head_size)
-        # token_embeds = self.ff(token_embeds)
-        token_embeds = self.block_list(token_embeds)
-        token_embeds = self.final_ln(token_embeds)
-        logits = self.lm_head(token_embeds) # (b,t,c=vocab_size)
+        x += pos_embeds
+        x = self.block_list(x)
+        x = self.final_ln(x)
+        logits = self.lm_head(x) # (b,t,c=vocab_size)
         if targets is None:
             loss = None
         else:
@@ -214,33 +183,33 @@ class BigramLanguageModel(torch.nn.Module):
         return ixs
 
 
-blm = BigramLanguageModel(embed_dim).to(device)
+model = Transformer(embed_dim).to(device)
 start_ix = torch.zeros((1,1), dtype=torch.long, device=device) # (newline character in a single batch)
 
-optimzer = torch.optim.AdamW(blm.parameters(), lr=lr)
+optimzer = torch.optim.AdamW(model.parameters(), lr=lr)
 
 @torch.no_grad()
 def estimate_losses():
-    blm.eval()
+    model.eval()
     losses = {'train': -1., 'val': -1.}
     for split in ['train', 'val']:
         d = train_data if split == 'train' else val_data
         loss = 0
         for _ in range(eval_iters):
             xb, yb = get_batches(d)
-            loss += blm(xb, yb)[1].item()
+            loss += model(xb, yb)[1].item()
         loss /= eval_iters
         if split == 'train':
             losses['train'] = loss
         else:
             losses['val'] = loss
-    blm.train()
+    model.train()
     return losses
 
 
 for i in range(num_iters):
     xb, yb = get_batches(train_data)
-    logits, loss = blm(xb, yb)
+    logits, loss = model(xb, yb)
     if i % eval_interval == 0:
         losses = estimate_losses()
         print(f'Epoch {i}: Train Loss={losses["train"]:.4f}, Val Loss={losses["val"]:.4f}')
@@ -251,7 +220,7 @@ for i in range(num_iters):
     loss.backward()
     optimzer.step()
 
-print(decode(blm.generate(start_ix, 1000)[0].tolist()))
+print(decode(model.generate(start_ix, 1000)[0].tolist()))
 
 # save model
-torch.save(blm.state_dict(), save_path)
+torch.save(model.state_dict(), save_path)
