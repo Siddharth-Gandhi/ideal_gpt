@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=j
+#SBATCH --job-name=pv2
 #SBATCH --partition=gpu
 #SBATCH --cpus-per-gpu=8
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
-#SBATCH --time=48:00:00
-#SBATCH --mem=32GB
+#SBATCH --time=72:00:00
+#SBATCH --mem=64GB
 #SBATCH --output=logs/jupyter.log
 #SBATCH --nodelist=boston-1-7
 
@@ -13,7 +13,9 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate idl
 
 # cat /etc/hosts
-node=$(hostname -s)
-port=8889
 
-jupyter-lab --port=${port} --ip=${node} --no-browser
+nvidia-smi
+
+echo "starting run"
+python transformer_v2.py
+echo "job done"
